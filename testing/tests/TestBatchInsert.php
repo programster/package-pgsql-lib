@@ -1,30 +1,30 @@
 <?php
 
+/*
+ * Tests that batch inserting rows works, by inserting two users and selecting them back.
+ */
+
+use Programster\PgsqlLib\Conjunction;
+
 
 class TestBatchInsert extends AbstractTest
 {
     public function __construct()
     {
         $db = ConnectionHandler::getDb();
-        $query = "TRUNCATE {$db->escapeIdentifier("user")}";
-        $result = $db->query($query);
-
-        if ($result === FALSE)
-        {
-            throw new \Exception("Failed to empty the test table.");
-        }
+        $db->query("TRUNCATE {$db->escapeIdentifier("user")}"); // throws on failure
     }
 
 
-    public function getDescription(): string
+    public function getDescription() : string
     {
-        return "Test that batch inserting data works..";
+        return "Test that batch inserting data works.";
     }
 
 
-    public function run()
+    public function run() : void
     {
-        $users = array(
+        $users = [
             [
                 'id' => '952036f3-3486-4630-9889-9f46b50a54e5',
                 'email' => 'user1@gmail.com',
@@ -35,35 +35,23 @@ class TestBatchInsert extends AbstractTest
                 'email' => 'user2@gmail.com',
                 'name' => 'user2',
             ]
-        );
+        ];
 
         $db = ConnectionHandler::getDb();
-        $batchInsertQuery = $db->generateBatchInsertQuery("user", $users);
-        $result = $db->query($batchInsertQuery);
+        $db->query($db->generateBatchInsertQuery("user", $users));
 
         $wherePairs = [
             'email' => ['user1@gmail.com', 'user2@gmail.com'],
         ];
 
-        $selectQuery = $db->generateSelectWhereQuery(
-            "user",
-            $wherePairs,
-            Programster\PgsqlLib\Conjunction::createOr()
-        );
-
-        $result = $db->query($selectQuery);
+        $result = $db->query($db->generateSelectWhereQuery("user", $wherePairs, Conjunction::OR));
 
         if (pg_num_rows($result) !== 2)
         {
             $this->m_errorMessages[] = "Did not have the expected number of user records";
-            $this->m_passed = false;
-        }
-        else
-        {
-            $this->m_passed = true;
         }
 
-        $db->query("DELETE FROM {$db->escapeIdentifier("user")}");
+        $this->m_passed = (count($this->m_errorMessages) === 0);
+        $db->query("TRUNCATE {$db->escapeIdentifier("user")}");
     }
 }
-

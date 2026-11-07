@@ -1,14 +1,14 @@
 <?php
 
 /*
- *
+ * Creates the "user" table in the public schema, which most of the tests use.
  */
 
 class CreateTestTables implements \Programster\PgsqlMigrations\MigrationInterface
 {
-    public function up($dbConn) : void
+    public function up(\PgSql\Connection $dbConn) : void
     {
-        $createUuidTableQuery =
+        $createUserTableQuery =
             'CREATE TABLE "user" (
                 "id" uuid NOT NULL,
                 "name" varchar(255) NOT NULL,
@@ -16,18 +16,22 @@ class CreateTestTables implements \Programster\PgsqlMigrations\MigrationInterfac
                 PRIMARY KEY (id)
             );';
 
-        $createUuidTableResult = pg_query($dbConn, $createUuidTableQuery);
+        $result = pg_query($dbConn, $createUserTableQuery);
 
-        if ($createUuidTableResult === FALSE)
+        if ($result === false)
         {
-            throw new \Exception("Failed to create the user table.");
+            throw new \Exception("Failed to create the user table: " . pg_last_error($dbConn));
         }
     }
 
 
-    public function down($mysqliConn) : void
+    public function down(\PgSql\Connection $dbConn) : void
     {
+        $result = pg_query($dbConn, 'DROP TABLE "user";');
 
+        if ($result === false)
+        {
+            throw new \Exception("Failed to drop the user table: " . pg_last_error($dbConn));
+        }
     }
 }
-

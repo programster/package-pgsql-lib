@@ -1,13 +1,17 @@
 <?php
 
+/*
+ * Runs the migrations, then every test in the tests folder, and prints a summary.
+ * Exits with 1 if any test failed, so that CI can detect failures.
+ */
+
 require_once(__DIR__ . '/settings.php');
 require_once(__DIR__ . '/../vendor/autoload.php');
 
-$autoloader = new \iRAP\Autoloader\Autoloader(array(
+$autoloader = new \Programster\Autoloader\Autoloader([
     __DIR__,
     __DIR__ . '/tests',
-    __DIR__ . '/models',
-));
+]);
 
 $migrationManager = new Programster\PgsqlMigrations\MigrationManager(
     __DIR__ . '/migrations',
@@ -16,23 +20,22 @@ $migrationManager = new Programster\PgsqlMigrations\MigrationManager(
 
 $migrationManager->migrate();
 
-$testFiles = Programster\CoreLibs\Filesystem::getDirContents(__DIR__ . '/tests');
-$testResults = array();
-$testOutput = array();
-$testExceptoins = array();
+$boldGreen = "\033[1;32m";
+$boldRed = "\033[1;31m";
+$boldCyan = "\033[1;36m";
+$reset = "\033[0m";
+
+$testFiles = glob(__DIR__ . '/tests/*.php');
+$testResults = [];
+$testFailureMessages = [];
 
 foreach ($testFiles as $testFile)
 {
-    $baseName = basename($testFile);
-    $testName = str_replace(".php", "", $baseName);
-    $boldGreen = "\033[1;32m";
-    $boldRed = "\033[1;31m";
-    $reset = "\033[0m";
-    $boldCyan = "\033[1;36m";
-    $coloredPassedMessage = "{$boldGreen}PASSED{$reset}";
-    $coloredFailedMessage = "{$boldRed}FAILED{$reset}";
+    $testName = basename($testFile, ".php");
 
+    // Discard anything the test prints, so that only the summary is shown.
     ob_start();
+
     try
     {
         /* @var $test AbstractTest */
@@ -41,23 +44,21 @@ foreach ($testFiles as $testFile)
 
         if ($test->getPassed())
         {
-            $testResults[$testFile] = "passed";
-            print "{$boldCyan}{$testName}{$reset}: {$coloredPassedMessage}" . PHP_EOL;
+            $testResults[$testName] = "passed";
         }
         else
         {
-            $testResults[$testFile] = "failed";
-            print "{$boldCyan}{$testName}{$reset}: {$coloredFailedMessage} - " . implode(PHP_EOL, $test->getErrorMessages()) . PHP_EOL;
+            $testResults[$testName] = "failed";
+            $testFailureMessages[$testName] = implode(PHP_EOL, $test->getErrorMessages());
         }
     }
-    catch (Exception $ex)
+    catch (Throwable $ex)
     {
-        $testResults[$testFile] = "failed";
-        $testExceptoins[$testFile] = $ex;
-        print "{$boldCyan}{$testName}{$reset}: {$coloredFailedMessage} - {$ex->getMessage()}" . PHP_EOL;
+        $testResults[$testName] = "failed";
+        $testFailureMessages[$testName] = get_class($ex) . ": " . $ex->getMessage();
     }
 
-    $testOutput[$testFile] = ob_get_clean();
+    ob_end_clean();
 }
 
 arsort($testResults);
@@ -66,10 +67,14 @@ foreach ($testResults as $testName => $passedOrFailed)
 {
     if ($passedOrFailed === "passed")
     {
-        print "{$boldCyan}{$testName}{$reset}: {$coloredPassedMessage}" . PHP_EOL;
+        print "{$boldCyan}{$testName}{$reset}: {$boldGreen}PASSED{$reset}" . PHP_EOL;
     }
     else
     {
-        print "{$boldCyan}{$testName}{$reset}: {$coloredFailedMessage} - {$testExceptoins[$testName]->getMessage()}" . PHP_EOL;
+        print "{$boldCyan}{$testName}{$reset}: {$boldRed}FAILED{$reset} - {$testFailureMessages[$testName]}" . PHP_EOL;
     }
 }
+
+$numFailed = count($testFailureMessages);
+print PHP_EOL . (count($testResults) - $numFailed) . " passed, {$numFailed} failed" . PHP_EOL;
+exit(($numFailed > 0) ? 1 : 0);
