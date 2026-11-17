@@ -124,6 +124,24 @@ $query = "SELECT * FROM {$db->escapeIdentifier('user')} WHERE {$db->escapeIdenti
 ```
 
 
+## Queries With Values
+`query()` runs a query as it's given, such as one built with the escaping methods above. Optionally, give it the
+values as a second argument instead, and they're sent separately from the query (PostgreSQL's `pg_query_params`), as
+`$1`, `$2` and so on, so they're never part of the SQL and need no escaping:
+
+```php
+$result = $db->query('SELECT * FROM "user" WHERE "email" = $1 AND "status" = $2', [$email, 'active']);
+```
+
+The values must be a list, in the order of their placeholders. Strings are sent as they are, nulls as SQL `NULL`,
+bools as `true` or `false` (`pg_query_params` on its own would send `false` as an empty string), floats with their
+full precision (or as `Infinity`, `-Infinity` and `NaN`), and backed enums as their backing values. Anything else, or
+values keyed by name, throws an `ExceptionUnexpectedValueType`, before anything is sent.
+
+Without values, the query is sent as it is (`pg_query`), as before, so it can hold several statements separated by
+semicolons. A query with values can only hold one, as PostgreSQL doesn't allow more.
+
+
 ## Using a Schema
 Wherever a method takes a table, you can pass either a table name as a string, or a `Table`. A string, or a `Table`
 without a schema, is left unqualified, so PostgreSQL finds the table using the connection's `search_path`. That is

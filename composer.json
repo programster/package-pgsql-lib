@@ -14,7 +14,7 @@
         }
     ],
     "require": {
-        "php": ">=8.2.0",
+        "php": "^8.2",
         "ext-pgsql": "*"
     },
     "require-dev" : {

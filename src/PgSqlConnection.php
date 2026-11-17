@@ -152,20 +152,55 @@ final readonly class PgSqlConnection
 
 
     /**
-     * Executes a pg_query call on the underlying connection resource.
+     * Executes a query on the underlying connection, e.g. query('SELECT * FROM "user"'), or one built with the
+     * escaping methods, e.g. query("SELECT * FROM \"user\" WHERE \"id\" = {$db->escapeValue($id)}"), as before.
      *
-     * @param string $query - the query to execute.
+     * Optionally, give the values separately instead, as $params, with a $1, $2 etc. placeholder for each in the
+     * query, and they're sent separately from it (pg_query_params), so they need no escaping, e.g.
+     * query('SELECT * FROM "user" WHERE "email" = $1 AND "status" = $2', [$email, 'active']).
+     *
+     * @param string $query - the query to execute. Without params, it's sent as it is (pg_query), so it may hold
+     * several statements, separated by semicolons. With params, it may only hold one, as PostgreSQL requires.
+     *
+     * @param list<string|int|float|bool|null|\BackedEnum> $params - optionally, the values for the query's $1, $2
+     * etc. placeholders, in order. Defaults to none. A null is sent as SQL NULL, a bool as true or false
+     * (pg_query_params on its own would send false as an empty string, which PostgreSQL rejects as a boolean), a float
+     * with its full precision, or as 'Infinity', '-Infinity' or 'NaN', and a backed enum as its backing value.
      *
      * @return Result - the result of the query.
+     *
+     * @throws ExceptionUnexpectedValueType - if $params isn't a list, or a value isn't a string, int, float, bool,
+     * null or backed enum, before anything is sent.
      *
      * @throws ExceptionQueryError - if there was an issue executing the query. The exception holds PostgreSQL's
      * error message (getErrorMessage()) and the query that failed (getQuery()).
      */
-    public function query(string $query) : Result
+    public function query(string $query, array $params = []) : Result
     {
-        $runQuery = function () use ($query) : Result|false {
-            return pg_query($this->getResource(), $query);
-        };
+        if (array_is_list($params) === false)
+        {
+            throw new ExceptionUnexpectedValueType($params, "The params must be a list, in the order of \$1, \$2 etc.");
+        }
+
+        $values = [];
+
+        foreach ($params as $param)
+        {
+            $values[] = PgSqlConnection::convertParam($param);
+        }
+
+        if (count($values) === 0)
+        {
+            $runQuery = function () use ($query) : Result|false {
+                return pg_query($this->getResource(), $query);
+            };
+        }
+        else
+        {
+            $runQuery = function () use ($query, $values) : Result|false {
+                return pg_query_params($this->getResource(), $query, $values);
+            };
+        }
 
         PgSqlConnection::callCapturingWarning($runQuery, $result);
 
@@ -366,6 +401,53 @@ final readonly class PgSqlConnection
             $wherePairs,
             $conjunction
         );
+    }
+
+
+    /**
+     * Convert a value for query()'s params to the text pg_query_params sends for it.
+     * @param mixed $param - the value.
+     * @return string|null - its text, or null for SQL NULL.
+     * @throws ExceptionUnexpectedValueType - if it isn't a string, int, float, bool, null or backed enum.
+     */
+    private static function convertParam(mixed $param) : ?string
+    {
+        if ($param instanceof \BackedEnum)
+        {
+            $converted = (string)$param->value;
+        }
+        elseif ($param === null || is_string($param))
+        {
+            $converted = $param;
+        }
+        elseif (is_bool($param))
+        {
+            $converted = $param ? 't' : 'f';
+        }
+        elseif (is_int($param))
+        {
+            $converted = (string)$param;
+        }
+        elseif (is_float($param) && is_nan($param))
+        {
+            $converted = 'NaN';
+        }
+        elseif (is_float($param) && is_infinite($param))
+        {
+            $converted = ($param > 0) ? 'Infinity' : '-Infinity';
+        }
+        elseif (is_float($param))
+        {
+            // (string) only keeps php.ini's "precision" (14) significant digits, whereas var_export uses
+            // serialize_precision, which by default (-1) gives the shortest text that reads back as the same float.
+            $converted = var_export($param, true);
+        }
+        else
+        {
+            throw new ExceptionUnexpectedValueType($param);
+        }
+
+        return $converted;
     }
 
 
