@@ -17,6 +17,10 @@ use Programster\PgsqlLib\Exceptions\ExceptionUnexpectedValueType;
 
 final class PgsqlLib
 {
+    // A UUID of any version, in its usual form, for isValidUuid(). D stops $ matching before a trailing newline.
+    private const UUID_PATTERN = '#^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$#iD';
+
+
     /**
      * This class only has static methods, so it is never instantiated.
      */
@@ -520,5 +524,157 @@ final class PgsqlLib
             . " VALUES " . implode(",", $valueSets);
 
         return $query;
+    }
+
+
+    /**
+     * Generate a UUID of the version given, in lowercase, e.g. "019a8f2e-5c1b-7d3a-9e4f-0b6c2d8a1f37".
+     *
+     * UuidVersion::V7 is the one to use for primary keys: it starts with the current time, to a 4096th of a
+     * millisecond, so UUIDs generated later sort after those generated earlier, as strings or in binary. Within a
+     * process, each is always greater than the one before it, even if two are generated within the same 4096th of a
+     * millisecond, or the clock goes backwards. UuidVersion::V4 is entirely random, so use it where a UUID mustn't
+     * give away when it was made. UuidVersion::V1 is for systems that expect one: it holds the time too, to a 10th
+     * of a microsecond, but doesn't sort by it, and ends with a random node, rather than the machine's MAC address.
+     *
+     * @param UuidVersion $version - the version of UUID to generate.
+     *
+     * @return string
+     */
+    public static function generateUuid(UuidVersion $version) : string
+    {
+        $bytes = match ($version) {
+            UuidVersion::V1 => self::generateUuidV1Bytes(),
+            UuidVersion::V4 => self::generateUuidV4Bytes(),
+            UuidVersion::V7 => self::generateUuidV7Bytes(),
+        };
+
+        $hex = bin2hex($bytes);
+
+        return implode('-', [
+            substr($hex, 0, 8),
+            substr($hex, 8, 4),
+            substr($hex, 12, 4),
+            substr($hex, 16, 4),
+            substr($hex, 20, 12),
+        ]);
+    }
+
+
+    /**
+     * Check whether a string is a UUID of any version, in its usual form: 32 hex digits, in either case, in groups of
+     * 8, 4, 4, 4 and 12, separated by hyphens. Nothing else is accepted: no braces, "urn:uuid:" prefix, spaces or
+     * trailing newline, as a string that needs tidying first isn't safe to compare with UUIDs as they're stored.
+     *
+     * @param string $uuid
+     *
+     * @return bool
+     */
+    public static function isValidUuid(string $uuid) : bool
+    {
+        return (preg_match(self::UUID_PATTERN, $uuid) === 1);
+    }
+
+
+    /**
+     * Generate the 16 bytes of a UUIDv1: a 60-bit timestamp (100-nanosecond intervals since 1582-10-15, the start of
+     * the Gregorian calendar), the version and variant bits, a 14-bit clock sequence, and a 48-bit node.
+     *
+     * The node is random, with its multicast bit set (RFC 9562 section 6.10), rather than the machine's MAC address,
+     * so a UUID doesn't give away which machine made it, and can't clash with one made from a real MAC address. The
+     * node and clock sequence are chosen afresh in each process (including after a fork), so processes don't share
+     * them. Each timestamp is greater than the last one this process generated, as PHP's clock only gives
+     * microseconds.
+     *
+     * @return string - the bytes, in binary.
+     */
+    private static function generateUuidV1Bytes() : string
+    {
+        // The number of 100-nanosecond intervals between 1582-10-15 and 1970-01-01.
+        $gregorianOffset = 122192928000000000;
+
+        // The process the node and clock sequence were chosen in, and the timestamp of the last UUIDv1 generated.
+        static $s_processId = null;
+        static $s_node = '';
+        static $s_clockSequence = 0;
+        static $s_lastTimestamp = 0;
+
+        if ($s_processId !== getmypid())
+        {
+            $s_processId = getmypid();
+            $s_node = random_bytes(6);
+            $s_node[0] = chr(ord($s_node[0]) | 0x01);
+            $s_clockSequence = random_int(0, 0x3fff);
+            $s_lastTimestamp = 0;
+        }
+
+        $time = explode(' ', microtime());
+        $microseconds = (int)$time[1] * 1000000 + (int)substr($time[0], 2, 6);
+        $timestamp = $microseconds * 10 + $gregorianOffset;
+
+        if ($timestamp <= $s_lastTimestamp)
+        {
+            $timestamp = $s_lastTimestamp + 1;
+        }
+
+        $s_lastTimestamp = $timestamp;
+        $timeLow = $timestamp & 0xffffffff;
+        $timeMid = ($timestamp >> 32) & 0xffff;
+        $versionAndTimeHigh = 0x1000 | (($timestamp >> 48) & 0x0fff);
+
+        // The clock sequence, with the RFC 9562 variant bits set.
+        $variantAndClockSequence = 0x8000 | $s_clockSequence;
+
+        return pack('Nnnn', $timeLow, $timeMid, $versionAndTimeHigh, $variantAndClockSequence) . $s_node;
+    }
+
+
+    /**
+     * Generate the 16 bytes of a UUIDv4: 122 random bits, with the version and variant bits set.
+     * @return string - the bytes, in binary.
+     */
+    private static function generateUuidV4Bytes() : string
+    {
+        $bytes = random_bytes(16);
+        $bytes[6] = chr((ord($bytes[6]) & 0x0f) | 0x40);
+
+        // Set the RFC 9562 variant bits.
+        $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
+
+        return $bytes;
+    }
+
+
+    /**
+     * Generate the 16 bytes of a UUIDv7: a 60-bit timestamp (milliseconds, then 12 bits of fraction), the version
+     * and variant bits, and 62 random bits. Each timestamp is greater than the last one this process generated, even
+     * if the clock hasn't moved on, or has gone backwards.
+     *
+     * @return string - the bytes, in binary.
+     */
+    private static function generateUuidV7Bytes() : string
+    {
+        // The timestamp of the last UUIDv7 generated.
+        static $s_lastTimestamp = 0;
+
+        $time = explode(' ', microtime());
+        $microseconds = (int)$time[1] * 1000000 + (int)substr($time[0], 2, 6);
+        $fraction = intdiv(($microseconds % 1000) * 4096, 1000);
+        $timestamp = (intdiv($microseconds, 1000) << 12) | $fraction;
+
+        if ($timestamp <= $s_lastTimestamp)
+        {
+            $timestamp = $s_lastTimestamp + 1;
+        }
+
+        $s_lastTimestamp = $timestamp;
+        $millisecondsHex = str_pad(dechex($timestamp >> 12), 12, '0', STR_PAD_LEFT);
+        $versionAndFractionHex = dechex(0x7000 | ($timestamp & 0xfff));
+        $bytes = hex2bin($millisecondsHex . $versionAndFractionHex) . random_bytes(8);
+
+        // Set the RFC 9562 variant bits.
+        $bytes[8] = chr((ord($bytes[8]) & 0x3f) | 0x80);
+
+        return $bytes;
     }
 }

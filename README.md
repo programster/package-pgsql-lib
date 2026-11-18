@@ -170,6 +170,40 @@ $db->escapeTableName(new Table('user', 'app'));  # "app"."user"
 The same methods are available statically on `PgsqlLib`, taking the `PgSql\Connection` as the first parameter.
 
 
+## UUIDs
+`PgsqlLib::generateUuid()` generates a UUID ([RFC 9562](https://www.rfc-editor.org/rfc/rfc9562)) of the version you
+give it, in lowercase. PostgreSQL's own `uuidv7()` only arrived in PostgreSQL 18, whereas this works with any version,
+and lets you know a row's ID before inserting it.
+
+- **`UuidVersion::V7`** starts with the current time, to a 4096th of a millisecond, and ends with 62 random bits, so
+  UUIDs generated later sort after those generated earlier, both as strings and in a `uuid` column. That makes them
+  good primary keys, as each new row goes at the end of the index, rather than somewhere random in it. Within a
+  process, each is always greater than the one before it, even if two are generated within the same 4096th of a
+  millisecond, or the clock goes backwards.
+- **`UuidVersion::V4`** is 122 random bits, so use it where a UUID mustn't give away when it was made, or the order
+  things were made in.
+- **`UuidVersion::V1`** is for systems that expect one. It holds the time too, to a 10th of a microsecond, but doesn't
+  sort by it. It ends with a random node, with its multicast bit set (as RFC 9562 allows), rather than the machine's
+  MAC address, so it doesn't give away which machine made it. The node is chosen afresh in each process, including
+  after a fork.
+
+`PgsqlLib::isValidUuid()` checks whether a string is a UUID of any version, in its usual form: 32 hex digits, in either
+case, in groups of 8, 4, 4, 4 and 12, separated by hyphens. Unlike PostgreSQL's `uuid` type, it doesn't accept braces,
+missing hyphens, spaces or a trailing newline, so check an ID with it before using it in a query, rather than having
+PostgreSQL reject the query, or tidy up an ID that doesn't then match the one you were given.
+
+```php
+use Programster\PgsqlLib\PgsqlLib;
+use Programster\PgsqlLib\UuidVersion;
+
+$id = PgsqlLib::generateUuid(UuidVersion::V7); # e.g. "019a8f2e-5c1b-7d3a-9e4f-0b6c2d8a1f37"
+$db->query('INSERT INTO "user" ("id", "name") VALUES ($1, $2)', [$id, 'bob']);
+
+PgsqlLib::isValidUuid($id);                                       # true
+PgsqlLib::isValidUuid("{019a8f2e-5c1b-7d3a-9e4f-0b6c2d8a1f37}");  # false
+```
+
+
 ## Errors
 Every exception the library throws extends `Programster\PgsqlLib\Exceptions\AbstractException`, so you can catch
 them all in one place:
