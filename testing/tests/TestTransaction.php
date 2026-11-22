@@ -11,6 +11,7 @@ use Programster\PgsqlLib\Exceptions\ExceptionInvalidTransaction;
 use Programster\PgsqlLib\Exceptions\ExceptionQueryError;
 use Programster\PgsqlLib\Query;
 use Programster\PgsqlLib\QueryCollection;
+use Programster\PgsqlLib\QueryResultCollection;
 use Programster\PgsqlLib\Transaction;
 
 
@@ -49,6 +50,7 @@ class TestTransaction extends AbstractTest
             $this->checkQueriesWithValues();
             $this->checkAcceptedForms();
             $this->checkCallbacksInConstructor();
+            $this->checkExtending();
         }
         finally
         {
@@ -521,6 +523,67 @@ class TestTransaction extends AbstractTest
             $create = function () use ($db, $badCallbacks) : void { new Transaction($db, [], $badCallbacks); };
             $this->checkThrows(ExceptionInvalidTransaction::class, "an array holding a non-closure", $create);
         }
+    }
+
+
+    private function checkExtending() : void
+    {
+        $this->reset();
+        $db = ConnectionHandler::getDb();
+        $log = new \ArrayObject();
+
+        $child = new class($db, [$this->insert(1)], $log) extends Transaction {
+            private \ArrayObject $m_log;
+            public int $m_prepareCalls = 0;
+
+            public function __construct(Programster\PgsqlLib\PgSqlConnection $db, array $queries, \ArrayObject $log)
+            {
+                parent::__construct($db, $queries, [function () use ($log) : void { $log[] = 'callback'; }]);
+                $this->m_log = $log;
+            }
+
+            protected function prepareQueries() : QueryCollection
+            {
+                $this->m_prepareCalls++;
+                $queries = clone parent::prepareQueries();
+                $queries->add('SELECT 42');
+                return $queries;
+            }
+
+            protected function afterSuccess(QueryResultCollection $results) : QueryResultCollection
+            {
+                $this->m_log[] = 'afterSuccess saw ' . count($results);
+                return new QueryResultCollection($results[1]);
+            }
+        };
+
+        $results = $child->execute();
+        $this->check("prepareQueries() adds to what runs", $this->countRows() === 1 && count($results) === 1);
+        $this->check("afterSuccess() changes what's returned", pg_fetch_result($results[0], 0, 0) === '42');
+        $this->check("afterSuccess() runs before the callbacks", $log->getArrayCopy() === ['afterSuccess saw 2', 'callback']);
+        $this->check("prepareQueries() runs once", $child->m_prepareCalls === 1);
+        $this->check("the original queries are unchanged", count($child) === 1);
+
+        $log->exchangeArray([]);
+        $failing = new class($db, [self::BAD_QUERY], $log) extends Transaction {
+            private \ArrayObject $m_log;
+
+            public function __construct(Programster\PgsqlLib\PgSqlConnection $db, array $queries, \ArrayObject $log)
+            {
+                parent::__construct($db, $queries);
+                $this->m_log = $log;
+            }
+
+            protected function afterSuccess(QueryResultCollection $results) : QueryResultCollection
+            {
+                $this->m_log[] = 'ran';
+                return $results;
+            }
+        };
+
+        $runFailing = function () use ($failing) : void { $failing->execute(); };
+        $this->checkThrows(ExceptionQueryError::class, "a failing extended transaction", $runFailing);
+        $this->check("afterSuccess() doesn't run if it fails", count($log) === 0);
     }
 
 

@@ -8,6 +8,7 @@ Nothing needs changing. This adds:
 
 - `Transaction`, `Query` and `QueryCollection`, and `PgSqlConnection::runInTransaction()` and `isInTransaction()`. See
   [Transactions](transactions.md).
+- `Transaction` can be extended, with `prepareQueries()` and `afterSuccess()`.
 - `ExceptionQueryError::getSqlState()` and `isRetryable()`.
 - A new dependency on `programster/collections`.
 

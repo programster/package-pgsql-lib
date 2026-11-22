@@ -7,6 +7,8 @@
  * It can only be executed once, whether or not that succeeds, unless it was created with $isReusable set to true. If
  * the connection is lost during a commit, there's no way to know whether the commit happened, so running it again could
  * apply everything twice.
+ *
+ * To build on it, extend it and override prepareQueries() and afterSuccess().
  */
 
 declare(strict_types = 1);
@@ -20,7 +22,7 @@ use Programster\PgsqlLib\Exceptions\ExceptionInvalidTransaction;
 use Programster\PgsqlLib\Exceptions\ExceptionQueryError;
 
 
-final class Transaction implements \Countable
+class Transaction implements \Countable
 {
     private const SAVEPOINT = 'pgsql_lib_transaction';
     private const MAX_RETRY_DELAY_MILLISECONDS = 1000;
@@ -29,7 +31,7 @@ final class Transaction implements \Countable
     // the new line ends any comment at the end of a query, which would otherwise swallow the semicolon.
     private const STATEMENT_SEPARATOR = "\n;\n";
 
-    private readonly PgSqlConnection $m_db;
+    protected readonly PgSqlConnection $m_db;
     private readonly int $m_maxAttempts;
     private readonly bool $m_isReusable;
     private QueryCollection $m_queries;
@@ -157,33 +159,11 @@ final class Transaction implements \Countable
 
         // even if this fails, so that it can't be run again by mistake (see the top of this class).
         $this->m_hasRun = true;
-        $isNested = $this->m_db->isInTransaction();
-        $maxAttempts = $isNested ? 1 : $this->m_maxAttempts;
-        $failedAttempts = 0;
-        $isFinished = false;
-
-        while ($isFinished === false)
-        {
-            try
-            {
-                $results = $this->hasParams() ? $this->runEachQuery($isNested) : $this->runAsBatch($isNested);
-                $isFinished = true;
-            }
-            catch (ExceptionQueryError $exception)
-            {
-                $failedAttempts++;
-
-                if ($exception->isRetryable() === false || $failedAttempts >= $maxAttempts)
-                {
-                    throw $exception;
-                }
-
-                usleep(self::calculateRetryDelayMicroseconds($failedAttempts));
-            }
-        }
-
+        $queries = $this->prepareQueries();
+        $results = (count($queries) > 0) ? $this->runWithRetries($queries) : new QueryResultCollection();
+        $finalResults = $this->afterSuccess($results);
         $this->runAfterCommitCallbacks();
-        return $results;
+        return $finalResults;
     }
 
 
@@ -232,6 +212,48 @@ final class Transaction implements \Countable
     public function isReusable() : bool
     {
         return $this->m_isReusable;
+    }
+
+
+    /**
+     * Get the queries to run. This is called once, when the transaction is executed, before anything is sent. Override
+     * it to add to or change them.
+     *
+     * @return QueryCollection - the queries, in order.
+     */
+    protected function prepareQueries() : QueryCollection
+    {
+        return $this->m_queries;
+    }
+
+
+    /**
+     * Called once the transaction has succeeded, before the after-commit callbacks. Override it to act on the results,
+     * or change what execute() returns. If a transaction was already open, nothing is final until that commits.
+     *
+     * @param QueryResultCollection $results - the result of each query from prepareQueries(), in order.
+     *
+     * @return QueryResultCollection - what execute() should return.
+     */
+    protected function afterSuccess(QueryResultCollection $results) : QueryResultCollection
+    {
+        return $results;
+    }
+
+
+    /**
+     * Check that the transaction can still be changed and run.
+     * @return void
+     * @throws ExceptionInvalidTransaction - if it can only run once, and already has.
+     */
+    protected function assertCanRun() : void
+    {
+        if ($this->m_hasRun && $this->m_isReusable === false)
+        {
+            throw new ExceptionInvalidTransaction(
+                "This transaction has already been executed, so it can't be changed or run again. Create a new one."
+            );
+        }
     }
 
 
@@ -307,11 +329,56 @@ final class Transaction implements \Countable
     }
 
 
-    private function hasParams() : bool
+    /**
+     * Run the queries, trying again on a serialization failure or a deadlock, up to the maximum attempts. Only the
+     * outermost transaction is retried, as PostgreSQL needs the whole transaction to be run again.
+     *
+     * @param QueryCollection $queries - the queries.
+     *
+     * @return QueryResultCollection - each query's result, in order.
+     *
+     * @throws ExceptionQueryError - if it failed for another reason, or ran out of attempts.
+     */
+    private function runWithRetries(QueryCollection $queries) : QueryResultCollection
+    {
+        $isNested = $this->m_db->isInTransaction();
+        $maxAttempts = $isNested ? 1 : $this->m_maxAttempts;
+        $hasParams = $this->hasParams($queries);
+        $failedAttempts = 0;
+        $isFinished = false;
+
+        while ($isFinished === false)
+        {
+            try
+            {
+                $results = $hasParams
+                    ? $this->runEachQuery($isNested, $queries)
+                    : $this->runAsBatch($isNested, $queries);
+
+                $isFinished = true;
+            }
+            catch (ExceptionQueryError $exception)
+            {
+                $failedAttempts++;
+
+                if ($exception->isRetryable() === false || $failedAttempts >= $maxAttempts)
+                {
+                    throw $exception;
+                }
+
+                usleep(self::calculateRetryDelayMicroseconds($failedAttempts));
+            }
+        }
+
+        return $results;
+    }
+
+
+    private function hasParams(QueryCollection $queries) : bool
     {
         $hasParams = false;
 
-        foreach ($this->m_queries as $query)
+        foreach ($queries as $query)
         {
             $hasParams = ($hasParams || $query->hasParams());
         }
@@ -323,12 +390,13 @@ final class Transaction implements \Countable
     /**
      * Send everything as one query, in a single round trip, and read back every statement's result.
      * @param bool $isNested - whether a transaction was already open.
+     * @param QueryCollection $queryCollection - the queries.
      * @return QueryResultCollection - each query's result, in order.
      * @throws ExceptionQueryError - if anything failed, after rolling back.
      */
-    private function runAsBatch(bool $isNested) : QueryResultCollection
+    private function runAsBatch(bool $isNested, QueryCollection $queryCollection) : QueryResultCollection
     {
-        $queries = array_values($this->m_queries->toArray());
+        $queries = array_values($queryCollection->toArray());
         $statements = [$this->getOpeningStatement($isNested)];
 
         foreach ($queries as $query)
@@ -356,10 +424,11 @@ final class Transaction implements \Countable
     /**
      * Send each statement on its own, as is needed when any of them have params.
      * @param bool $isNested - whether a transaction was already open.
+     * @param QueryCollection $queries - the queries.
      * @return QueryResultCollection - each query's result, in order.
      * @throws ExceptionQueryError - if anything failed, after rolling back.
      */
-    private function runEachQuery(bool $isNested) : QueryResultCollection
+    private function runEachQuery(bool $isNested, QueryCollection $queries) : QueryResultCollection
     {
         $results = [];
 
@@ -367,7 +436,7 @@ final class Transaction implements \Countable
         {
             $this->runStatement($this->getOpeningStatement($isNested));
 
-            foreach ($this->m_queries as $query)
+            foreach ($queries as $query)
             {
                 $results[] = $this->runStatement($query->getSql(), $query->getParams());
             }
@@ -545,23 +614,6 @@ final class Transaction implements \Countable
         if (count($failures) > 0)
         {
             throw new ExceptionAfterCommitFailed($failures[0], count($failures));
-        }
-    }
-
-
-    /**
-     * Check that the transaction can still be changed and run.
-     * @return void
-     * @throws ExceptionInvalidTransaction - if it can only run once, and already has.
-     */
-    private function assertCanRun() : void
-    {
-        if ($this->m_hasRun && $this->m_isReusable === false)
-        {
-            throw new ExceptionInvalidTransaction(
-                "This transaction has already been executed, so it can't be changed or run again. Create a new one, or"
-                . " create it with isReusable set to true for one that can run many times."
-            );
         }
     }
 

@@ -8,6 +8,7 @@
 - [After-commit callbacks](#after-commit-callbacks)
 - [Retries](#retries)
 - [Inside an open transaction](#inside-an-open-transaction)
+- [Extending it](#extending-it)
 - [Errors](#errors)
 
 ## Running queries together
@@ -141,6 +142,36 @@ succeeded.
 If a transaction is already open on the connection, the queries run inside a savepoint. A failure only undoes them, and
 nothing is final until the open transaction commits. Retries don't apply there, as PostgreSQL needs the whole
 transaction to be run again, and after-commit callbacks are refused, as there's no way to know when it commits.
+
+## Extending it
+
+`Transaction` can be extended, to add to what it runs and act on the results, with two methods:
+
+- `prepareQueries()` returns the queries to run. It's called once, when the transaction is executed.
+- `afterSuccess($results)` is called once it has succeeded, before the after-commit callbacks, and returns what
+  `execute()` should return.
+
+```php
+use Programster\PgsqlLib\QueryCollection;
+use Programster\PgsqlLib\QueryResultCollection;
+use Programster\PgsqlLib\Transaction;
+
+$audited = new class($db, ['UPDATE "account" SET "balance" = "balance" + 1']) extends Transaction {
+    protected function prepareQueries() : QueryCollection
+    {
+        $queries = clone parent::prepareQueries();
+        $queries->add('INSERT INTO "transfer" ("from_id", "to_id") VALUES (1, 2)');
+        return $queries;
+    }
+
+    protected function afterSuccess(QueryResultCollection $results) : QueryResultCollection
+    {
+        return new QueryResultCollection($results[0]);
+    }
+};
+
+$audited->execute();
+```
 
 ## Errors
 
