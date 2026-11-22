@@ -1,6 +1,23 @@
 PgSQL Lib
 ==========
 
+[![Tests](https://github.com/programster/package-pgsql-lib/actions/workflows/tests.yml/badge.svg)](https://github.com/programster/package-pgsql-lib/actions/workflows/tests.yml)
+
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Escaping Values](#escaping-values)
+- [Queries With Values](#queries-with-values)
+- [Transactions](#transactions)
+- [Using a Schema](#using-a-schema)
+- [UUIDs](#uuids)
+- [Errors](#errors)
+- [Asynchronous Connections](#asynchronous-connections)
+- [Testing](#testing)
+- [Upgrading](#upgrading)
+- [Licence](#licence)
+- [Full documentation](docs/README.md)
+
 A library for helping interface with PostgreSQL.
 
 
@@ -142,6 +159,42 @@ Without values, the query is sent as it is (`pg_query`), as before, so it can ho
 semicolons. A query with values can only hold one, as PostgreSQL doesn't allow more.
 
 
+## Transactions
+Run several queries so that either they all take effect, or none do:
+
+```php
+$db->runInTransaction(
+    'UPDATE "account" SET "balance" = "balance" - 100 WHERE "id" = 1',
+    'UPDATE "account" SET "balance" = "balance" + 100 WHERE "id" = 2'
+);
+```
+
+To build one up, pass it around and run it later, use a `Transaction`:
+
+```php
+use Programster\PgsqlLib\Transaction;
+
+$transaction = new Transaction($db, ['UPDATE "account" SET "balance" = "balance" - 100 WHERE "id" = 1']);
+$transaction->append('UPDATE "account" SET "balance" = "balance" + 100 WHERE "id" = 2');
+$transaction->execute(); # commit(), run() and $transaction() do the same
+```
+
+Anywhere that takes a query takes either a string or a `Query`. Use a `Query` to send values separately from the SQL,
+so they need no escaping, and a large value isn't copied into the query:
+
+```php
+use Programster\PgsqlLib\Query;
+
+$db->runInTransaction(
+    new Query('UPDATE "account" SET "name" = $1 WHERE "id" = $2', ['Bob', 1]),
+    'UPDATE "account" SET "balance" = 0 WHERE "id" = 2'
+);
+```
+
+It can also run after-commit callbacks, and retry on serialization failures and deadlocks. See
+[Transactions](docs/transactions.md).
+
+
 ## Using a Schema
 Wherever a method takes a table, you can pass either a table name as a string, or a `Table`. A string, or a `Table`
 without a schema, is left unqualified, so PostgreSQL finds the table using the connection's `search_path`. That is
@@ -216,6 +269,9 @@ them all in one place:
 | `ExceptionMismatchedRows` | Batch insert rows have different columns, and the missing ones aren't in `columnsWithDefaults`. |
 | `ExceptionUnexpectedValueType` | A value can't be escaped. |
 | `ExceptionInvalidTableName` | A `Table` is given an empty table or schema name. |
+| `ExceptionInvalidQuery` | A `Query` is given SQL it can't use. |
+| `ExceptionInvalidTransaction` | A transaction is used in a way that can't work, such as running it twice. |
+| `ExceptionAfterCommitFailed` | An after-commit callback failed. The transaction was committed. |
 
 
 ## Asynchronous Connections
@@ -235,58 +291,19 @@ do
 
 
 ## Testing
-The tests need a PostgreSQL database. **They run migrations against it and empty its tables, so use a throwaway
-database.** Copy `testing/settings.php.tmpl` to `testing/settings.php`, fill in the connection details, and run:
+The tests need Docker, or a throwaway PostgreSQL database. To run them against every supported version:
 
 ```bash
 composer install
-php testing/main.php
+testing/run-all-versions.sh
 ```
 
-It exits with 1 if any test fails.
+See [Testing](docs/testing.md).
 
 
-## Upgrading from 2.x
-3.0 has the following breaking changes.
+## Upgrading
+See [Upgrading](docs/upgrading.md) for what changed in each release.
 
-**Queries**
-* `PgSqlConnection::query()` no longer has the `$throwExceptionOnError` parameter. It always returns a
-  `PgSql\Result`, and always throws `ExceptionQueryError` on failure. Use `try`/`catch` instead of checking for
-  `false`.
-* `pg_query()` and `pg_connect()` warnings no longer reach your error handler, as the failure is reported through the
-  exception instead.
 
-**Escaping**
-* `escapeValue()` and `escapeValues()` return `null` as the string `NULL`, and floats as full precision strings,
-  rather than returning them unchanged. `escapeValue()` is declared as returning `string|int`.
-* `INF`, `-INF` and `NAN` are escaped as PostgreSQL's `Infinity`, `-Infinity` and `NaN`, instead of generating
-  invalid SQL.
-
-**Query generators**
-* `generateDeleteWhereQuery()` throws `ExceptionNoData` if it's given no where pairs, instead of generating a query
-  that deletes every row.
-* `generateQueryPairs()` throws `ExceptionNoData` if it's given no pairs, instead of returning an empty string.
-* `generateBatchInsertQuery()` throws `ExceptionMismatchedRows` if a row is missing a column that another row has,
-  unless that column is in the new `columnsWithDefaults` parameter. Before, the values could silently end up in the
-  wrong columns. It also no longer adds a trailing semicolon.
-* The table parameter of the select, delete and batch insert generators, and of `escapeTableName()`, is now
-  `string|Table $table`, renamed from `$tableName`. This only affects calls that use named arguments.
-* A `null` in where pairs now generates `IS NULL`, instead of invalid SQL.
-
-**Classes**
-* Every `$conn` parameter in `PgsqlLib` is typed as `PgSql\Connection`.
-* `PgSqlConnection` is a `final readonly` class, and `PgsqlLib` is `final` and can't be instantiated, so neither can
-  be extended.
-* `PgSqlConnection::create()` has a new required `bool $forceNew` parameter, in fifth position, straight after
-  `$password`. `$port`, `$useUtf8` and `$useAsync` each move one place later. **Check every call that passes the port
-  positionally**, e.g. `create($host, $dbName, $user, $password, 5433)`. In a file without `strict_types`, PHP
-  silently converts the port into `forceNew: true` and connects on the default port, 5432, with no error. Named
-  arguments avoid this, e.g. `create($host, $dbName, $user, $password, forceNew: true, port: 5433)`.
-* `PgSqlConnection::create()`'s `$use_utf8` parameter is renamed to `$useUtf8`. This only affects calls that use
-  named arguments.
-* `PgSqlConnection::create()` now quotes the values in the connection string, so values with spaces, quotes or
-  backslashes work. If you were escaping backslashes yourself to work around this, stop, or they'll be escaped twice.
-* `ExceptionUnexpectedValueType`'s default message names the value's type, rather than printing the value.
-
-**Requirements**
-* The `programster/pgsql-lib` constraint needs updating, e.g. to `^3.0`.
+## Licence
+MIT. See [LICENSE](LICENSE).

@@ -186,7 +186,7 @@ final readonly class PgSqlConnection
 
         foreach ($params as $param)
         {
-            $values[] = PgSqlConnection::convertParam($param);
+            $values[] = PgsqlLib::convertQueryParam($param);
         }
 
         if (count($values) === 0)
@@ -210,6 +210,34 @@ final readonly class PgSqlConnection
         }
 
         return $result;
+    }
+
+
+    /**
+     * Run some queries in one transaction: either they all take effect, or none do. To build one up, pass it around,
+     * or use retries and after-commit callbacks, create a Transaction instead.
+     *
+     * @param Query|string ...$queries - the queries, in the order to run them. Use a Query for one with values.
+     *
+     * @return QueryResultCollection - each query's result, in order.
+     *
+     * @throws Exceptions\ExceptionInvalidQuery - if a string can't be used as a query (see Query).
+     * @throws ExceptionQueryError - if a query or the commit failed, after rolling back.
+     */
+    public function runInTransaction(Query|string ...$queries) : QueryResultCollection
+    {
+        $transaction = new Transaction($this, $queries);
+        return $transaction->execute();
+    }
+
+
+    /**
+     * Check whether a transaction is open on this connection, including one that has failed and not been rolled back.
+     * @return bool
+     */
+    public function isInTransaction() : bool
+    {
+        return pg_transaction_status($this->getResource()) !== PGSQL_TRANSACTION_IDLE;
     }
 
 
@@ -401,53 +429,6 @@ final readonly class PgSqlConnection
             $wherePairs,
             $conjunction
         );
-    }
-
-
-    /**
-     * Convert a value for query()'s params to the text pg_query_params sends for it.
-     * @param mixed $param - the value.
-     * @return string|null - its text, or null for SQL NULL.
-     * @throws ExceptionUnexpectedValueType - if it isn't a string, int, float, bool, null or backed enum.
-     */
-    private static function convertParam(mixed $param) : ?string
-    {
-        if ($param instanceof \BackedEnum)
-        {
-            $converted = (string)$param->value;
-        }
-        elseif ($param === null || is_string($param))
-        {
-            $converted = $param;
-        }
-        elseif (is_bool($param))
-        {
-            $converted = $param ? 't' : 'f';
-        }
-        elseif (is_int($param))
-        {
-            $converted = (string)$param;
-        }
-        elseif (is_float($param) && is_nan($param))
-        {
-            $converted = 'NaN';
-        }
-        elseif (is_float($param) && is_infinite($param))
-        {
-            $converted = ($param > 0) ? 'Infinity' : '-Infinity';
-        }
-        elseif (is_float($param))
-        {
-            // (string) only keeps php.ini's "precision" (14) significant digits, whereas var_export uses
-            // serialize_precision, which by default (-1) gives the shortest text that reads back as the same float.
-            $converted = var_export($param, true);
-        }
-        else
-        {
-            throw new ExceptionUnexpectedValueType($param);
-        }
-
-        return $converted;
     }
 
 

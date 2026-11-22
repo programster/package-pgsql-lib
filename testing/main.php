@@ -5,7 +5,20 @@
  * Exits with 1 if any test failed, so that CI can detect failures.
  */
 
-require_once(__DIR__ . '/settings.php');
+// run-all-versions.sh sets the connection details through TEST_ environment variables, and they replace settings.php
+// entirely, so that a run against its throwaway containers can never touch the database in that file.
+if (getenv('TEST_DB_HOST') !== false)
+{
+    foreach (['DB_HOST', 'DB_PORT', 'DB_USER', 'DB_PASSWORD', 'DB_NAME'] as $setting)
+    {
+        define($setting, (string)getenv("TEST_{$setting}"));
+    }
+}
+else
+{
+    require_once(__DIR__ . '/settings.php');
+}
+
 require_once(__DIR__ . '/../vendor/autoload.php');
 
 $autoloader = new \Programster\Autoloader\Autoloader([
@@ -19,6 +32,8 @@ $migrationManager = new Programster\PgsqlMigrations\MigrationManager(
 );
 
 $migrationManager->migrate();
+
+print "Testing against PostgreSQL " . (pg_version(ConnectionHandler::getDb()->getResource())['server'] ?? 'unknown') . PHP_EOL;
 
 $boldGreen = "\033[1;32m";
 $boldRed = "\033[1;31m";

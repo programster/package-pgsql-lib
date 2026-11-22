@@ -1,0 +1,52 @@
+# Runs the tests against every supported major version of PostgreSQL, on every supported version of PHP, using the same
+# script as running them locally (testing/run-all-versions.sh).
+name: Tests
+
+on:
+    push:
+        branches:
+            - main
+        tags:
+            - "*"
+    pull_request:
+        branches:
+            - main
+    workflow_dispatch:
+
+permissions:
+    contents: read
+
+jobs:
+    tests:
+        name: Tests on PHP ${{ matrix.php }}, PostgreSQL 14 to 18
+        runs-on: ubuntu-latest
+        timeout-minutes: 30
+
+        strategy:
+            fail-fast: false
+            matrix:
+                php: ["8.2", "8.3", "8.4", "8.5"]
+
+        steps:
+            - name: Check out the code
+              uses: actions/checkout@v5
+
+            - name: Install PHP
+              uses: shivammathur/setup-php@v2
+              with:
+                  php-version: ${{ matrix.php }}
+                  extensions: pgsql
+                  coverage: none
+
+            - name: Install Composer dependencies
+              run: composer install --no-interaction --no-progress --prefer-dist
+
+            - name: Run the tests against every supported version of PostgreSQL
+              shell: bash
+              run: |
+                  # GitHub runs bash with -e, which would stop here if the tests failed, so catch the exit code instead.
+                  set -o pipefail
+                  status=0
+                  bash testing/run-all-versions.sh 2>&1 | tee test-output.txt || status=$?
+                  bash testing/github-annotations.sh "PHP ${{ matrix.php }}" test-output.txt "$status"
+                  exit $status

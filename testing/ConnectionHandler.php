@@ -1,7 +1,7 @@
 <?php
 
 /*
- * Provides the database connection that the tests use.
+ * Provides the database connections that the tests use.
  */
 
 class ConnectionHandler
@@ -16,19 +16,29 @@ class ConnectionHandler
 
         if ($db === null)
         {
-            // DB_PORT is optional, so that settings files written before it existed still work.
-            $port = defined('DB_PORT') ? DB_PORT : 5432;
-
-            $db = Programster\PgsqlLib\PgSqlConnection::create(
-                DB_HOST,
-                DB_NAME,
-                DB_USER,
-                DB_PASSWORD,
-                forceNew: true,
-                port: $port
-            );
+            $db = self::createNewConnection();
         }
 
         return $db;
+    }
+
+
+    /**
+     * Create a new connection to the test database, separate from getDb(), e.g. to see what other sessions can see.
+     * @return \Programster\PgsqlLib\PgSqlConnection
+     */
+    public static function createNewConnection() : Programster\PgsqlLib\PgSqlConnection
+    {
+        // DB_PORT is optional, so that settings files written before it existed still work.
+        $port = defined('DB_PORT') ? (int)DB_PORT : 5432;
+
+        return Programster\PgsqlLib\PgSqlConnection::create(
+            DB_HOST,
+            DB_NAME,
+            DB_USER,
+            DB_PASSWORD,
+            forceNew: true,
+            port: $port
+        );
     }
 }

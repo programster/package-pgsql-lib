@@ -1,0 +1,10 @@
+# PHPStan settings. Run with: vendor/bin/phpstan
+parameters:
+    level: 5
+    # Docblock types aren't enforced at runtime, so the package still checks what careless callers actually pass.
+    treatPhpDocTypesAsCertain: false
+    phpVersion:
+        min: 80200
+        max: 80599
+    paths:
+        - src

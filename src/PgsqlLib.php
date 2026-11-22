@@ -577,6 +577,53 @@ final class PgsqlLib
 
 
     /**
+     * Convert a value for a query's params to the text pg_query_params sends for it.
+     * @param mixed $param - the value.
+     * @return string|null - its text, or null for SQL NULL.
+     * @throws ExceptionUnexpectedValueType - if it isn't a string, int, float, bool, null or backed enum.
+     */
+    public static function convertQueryParam(mixed $param) : ?string
+    {
+        if ($param instanceof \BackedEnum)
+        {
+            $converted = (string)$param->value;
+        }
+        elseif ($param === null || is_string($param))
+        {
+            $converted = $param;
+        }
+        elseif (is_bool($param))
+        {
+            $converted = $param ? 't' : 'f';
+        }
+        elseif (is_int($param))
+        {
+            $converted = (string)$param;
+        }
+        elseif (is_float($param) && is_nan($param))
+        {
+            $converted = 'NaN';
+        }
+        elseif (is_float($param) && is_infinite($param))
+        {
+            $converted = ($param > 0) ? 'Infinity' : '-Infinity';
+        }
+        elseif (is_float($param))
+        {
+            // (string) only keeps php.ini's "precision" (14) significant digits, whereas var_export uses
+            // serialize_precision, which by default (-1) gives the shortest text that reads back as the same float.
+            $converted = var_export($param, true);
+        }
+        else
+        {
+            throw new ExceptionUnexpectedValueType($param);
+        }
+
+        return $converted;
+    }
+
+
+    /**
      * Generate the 16 bytes of a UUIDv1: a 60-bit timestamp (100-nanosecond intervals since 1582-10-15, the start of
      * the Gregorian calendar), the version and variant bits, a 14-bit clock sequence, and a 48-bit node.
      *
